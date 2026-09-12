@@ -2,6 +2,7 @@
 
 import Script from "next/script";
 import {
+  ChangeEvent,
   FormEvent,
   useCallback,
   useEffect,
@@ -9,6 +10,7 @@ import {
   useState,
 } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { importEverytimeImage, type ImportedSchedule } from "@/lib/timetable-import";
 
 declare global {
   interface Window {
@@ -29,7 +31,9 @@ type Friend = Omit<User, "inviteCode"> & { lastSeen: string | null };
 type Schedule = {
   id: string;
   courseName: string;
+  weekday: number;
   startsAt: string;
+  endsAt: string;
   room: string;
 };
 
@@ -58,22 +62,34 @@ type FriendshipRow = {
 type ScheduleRow = {
   id: string;
   course_name: string;
+  weekday: number;
   starts_at: string;
+  ends_at: string;
   room: string;
 };
 
 const CAMPUS = { lat: 37.4564, lng: 126.9515 };
+const WEEKDAYS = ["월", "화", "수", "목", "금"];
 
 function first<T>(value: T | T[] | null) {
   return Array.isArray(value) ? (value[0] ?? null) : value;
 }
 
 function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "object" && error && "message" in error) {
-    return String(error.message);
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "object" && error && "message" in error
+      ? String(error.message)
+      : "요청을 처리하지 못했어요.";
+  if (/ends_at|weekday/i.test(message) && /column|schema|cache|exist/i.test(message)) {
+    return "새 시간표 migration SQL을 Supabase SQL Editor에서 먼저 실행해 주세요.";
   }
-  return "요청을 처리하지 못했어요.";
+  return message;
+}
+
+function isFiveMinuteTime(value: string) {
+  const parts = value.split(":");
+  return parts.length === 2 && Number(parts[1]) % 5 === 0;
 }
 
 export default function BobchinApp() {
@@ -89,10 +105,15 @@ export default function BobchinApp() {
   const [mapError, setMapError] = useState("");
   const [pendingInvite, setPendingInvite] = useState<string | null>(null);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [importedSchedules, setImportedSchedules] = useState<ImportedSchedule[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState("");
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<any[]>([]);
   const inviteInFlightRef = useRef("");
   const scheduleDialog = useRef<HTMLDialogElement>(null);
+  const importDialog = useRef<HTMLDialogElement>(null);
+  const timetableImageInput = useRef<HTMLInputElement>(null);
 
   const toast = useCallback((message: string) => {
     setNotice(message);
@@ -133,8 +154,9 @@ export default function BobchinApp() {
             .eq("user_id", userId),
           supabase
             .from("schedules")
-            .select("id, course_name, starts_at, room")
+            .select("id, course_name, weekday, starts_at, ends_at, room")
             .eq("user_id", userId)
+            .order("weekday")
             .order("starts_at"),
         ]);
 
@@ -180,7 +202,9 @@ export default function BobchinApp() {
         scheduleRows.map((schedule) => ({
           id: schedule.id,
           courseName: schedule.course_name,
+          weekday: schedule.weekday,
           startsAt: schedule.starts_at.slice(0, 5),
+          endsAt: schedule.ends_at.slice(0, 5),
           room: schedule.room,
         })),
       );
@@ -424,9 +448,19 @@ export default function BobchinApp() {
     const values = {
       user_id: user.id,
       course_name: String(form.get("courseName") ?? "").trim(),
+      weekday: Number(form.get("weekday")),
       starts_at: String(form.get("startsAt") ?? ""),
+      ends_at: String(form.get("endsAt") ?? ""),
       room: String(form.get("room") ?? "").trim(),
     };
+    if (!isFiveMinuteTime(values.starts_at) || !isFiveMinuteTime(values.ends_at)) {
+      toast("수업 시작과 종료 시간은 5분 단위로 입력해 주세요.");
+      return;
+    }
+    if (values.ends_at <= values.starts_at) {
+      toast("종료 시간은 시작 시간보다 늦어야 해요.");
+      return;
+    }
     setSubmitting(true);
     try {
       const query = editingSchedule
@@ -461,6 +495,71 @@ export default function BobchinApp() {
       if (error) throw error;
       await refresh(user.id);
       toast("시간표를 삭제했어요.");
+    } catch (error) {
+      toast(errorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const updateImportedSchedule = (
+    index: number,
+    field: keyof ImportedSchedule,
+    value: string | number,
+  ) => {
+    setImportedSchedules((schedules) => schedules.map((schedule, scheduleIndex) => (
+      scheduleIndex === index ? { ...schedule, [field]: value } : schedule
+    )));
+  };
+
+  const importTimetableImage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    setImportProgress("시간표를 준비하는 중…");
+    try {
+      const schedules = await importEverytimeImage(file, setImportProgress);
+      setImportedSchedules(schedules);
+      window.requestAnimationFrame(() => importDialog.current?.showModal());
+    } catch (error) {
+      toast(errorMessage(error));
+    } finally {
+      setImporting(false);
+      setImportProgress("");
+    }
+  };
+
+  const saveImportedSchedules = async () => {
+    if (!user || !importedSchedules.length) return;
+    const invalid = importedSchedules.some((schedule) => (
+      !schedule.courseName.trim() ||
+      !isFiveMinuteTime(schedule.startsAt) ||
+      !isFiveMinuteTime(schedule.endsAt) ||
+      schedule.endsAt <= schedule.startsAt
+    ));
+    if (invalid) {
+      toast("모든 수업의 이름과 5분 단위 시간을 확인해 주세요.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const { error } = await getSupabase().from("schedules").insert(
+        importedSchedules.map((schedule) => ({
+          user_id: user.id,
+          course_name: schedule.courseName.trim().slice(0, 40),
+          room: schedule.room.trim().slice(0, 40) || "강의실 미정",
+          weekday: schedule.weekday,
+          starts_at: schedule.startsAt,
+          ends_at: schedule.endsAt,
+        })),
+      );
+      if (error) throw error;
+      importDialog.current?.close();
+      setImportedSchedules([]);
+      await refresh(user.id);
+      toast(`${importedSchedules.length}개 수업을 시간표에 추가했어요.`);
     } catch (error) {
       toast(errorMessage(error));
     } finally {
@@ -564,10 +663,17 @@ export default function BobchinApp() {
             <section className="panel">
               <article><h2>친구 초대하기</h2><div className="invite-box"><p>링크를 받은 친구가 로그인하면 양쪽 친구 목록에 바로 추가돼요.</p><button onClick={() => void shareInvite()}>초대 링크 복사</button></div></article>
               <article>
-                <div className="panel-head"><h2>오늘의 시간표</h2><button onClick={() => openScheduleDialog()}>추가</button></div>
+                <div className="panel-head">
+                  <h2>내 시간표</h2>
+                  <div className="panel-head-actions">
+                    <button disabled={importing} onClick={() => timetableImageInput.current?.click()}>{importing ? "분석 중…" : "이미지 불러오기"}</button>
+                    <button onClick={() => openScheduleDialog()}>추가</button>
+                  </div>
+                </div>
+                {importing ? <p className="import-progress" role="status">{importProgress}</p> : null}
                 {schedules.length ? schedules.map((schedule) => (
                   <div className="schedule" key={schedule.id}>
-                    <time>{schedule.startsAt}</time><div><b>{schedule.courseName}</b><small>{schedule.room}</small></div>
+                    <time>{WEEKDAYS[schedule.weekday - 1]}<br />{schedule.startsAt}<br />{schedule.endsAt}</time><div><b>{schedule.courseName}</b><small>{schedule.room || "강의실 미입력"}</small></div>
                     <div className="row-actions"><button aria-label={`${schedule.courseName} 수정`} onClick={() => openScheduleDialog(schedule)}>수정</button><button aria-label={`${schedule.courseName} 삭제`} onClick={() => void deleteSchedule(schedule)}>삭제</button></div>
                   </div>
                 )) : <p className="empty">등록된 수업이 없어요.</p>}
@@ -581,10 +687,32 @@ export default function BobchinApp() {
         <form key={editingSchedule?.id ?? "new"} onSubmit={saveSchedule}>
           <h2>{editingSchedule ? "시간표 수정" : "시간표 추가"}</h2><p>수업 시간과 장소를 저장해요.</p>
           <label>과목명<input name="courseName" maxLength={40} required placeholder="예: 물리학 및 실험" defaultValue={editingSchedule?.courseName} /></label>
+          <label>요일<select name="weekday" defaultValue={editingSchedule?.weekday ?? 1}>{WEEKDAYS.map((weekday, index) => <option key={weekday} value={index + 1}>{weekday}요일</option>)}</select></label>
           <label>시작 시간<input name="startsAt" type="time" required defaultValue={editingSchedule?.startsAt} /></label>
+          <label>종료 시간<input name="endsAt" type="time" required defaultValue={editingSchedule?.endsAt} /></label>
           <label>강의실<input name="room" maxLength={40} required placeholder="예: 302동 105호" defaultValue={editingSchedule?.room} /></label>
           <div className="dialog-actions"><button type="button" onClick={() => scheduleDialog.current?.close()}>취소</button><button className="primary" disabled={submitting}>{submitting ? "저장 중…" : "저장"}</button></div>
         </form>
+      </dialog>
+      <input ref={timetableImageInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void importTimetableImage(event)} />
+      <dialog className="import-dialog" ref={importDialog} onClose={() => setImportedSchedules([])}>
+        <div className="import-dialog-inner">
+          <h2>인식한 시간표 확인</h2>
+          <p>에브리타임 이미지의 색상 블록과 텍스트를 읽었어요. 저장 전에 요일·시간·이름을 꼭 확인해 주세요.</p>
+          <div className="import-list">
+            {importedSchedules.map((schedule, index) => (
+              <div className="import-row" key={`${schedule.weekday}-${schedule.startsAt}-${index}`}>
+                <select aria-label="요일" value={schedule.weekday} onChange={(event) => updateImportedSchedule(index, "weekday", Number(event.target.value))}>{WEEKDAYS.map((weekday, weekdayIndex) => <option key={weekday} value={weekdayIndex + 1}>{weekday}</option>)}</select>
+                <input aria-label="시작 시간" type="time" step="300" value={schedule.startsAt} onChange={(event) => updateImportedSchedule(index, "startsAt", event.target.value)} />
+                <input aria-label="종료 시간" type="time" step="300" value={schedule.endsAt} onChange={(event) => updateImportedSchedule(index, "endsAt", event.target.value)} />
+                <input aria-label="과목명" maxLength={40} value={schedule.courseName} onChange={(event) => updateImportedSchedule(index, "courseName", event.target.value)} />
+                <input aria-label="강의실" maxLength={40} placeholder="강의실" value={schedule.room} onChange={(event) => updateImportedSchedule(index, "room", event.target.value)} />
+                <button className="icon-action" aria-label={`${schedule.courseName} 인식 결과 삭제`} onClick={() => setImportedSchedules((schedules) => schedules.filter((_, scheduleIndex) => scheduleIndex !== index))}>×</button>
+              </div>
+            ))}
+          </div>
+          <div className="dialog-actions"><button type="button" onClick={() => importDialog.current?.close()}>취소</button><button className="primary" disabled={submitting || !importedSchedules.length} onClick={() => void saveImportedSchedules()}>{submitting ? "저장 중…" : `${importedSchedules.length}개 저장`}</button></div>
+        </div>
       </dialog>
       <div className={`toast ${notice ? "show" : ""}`} role="status">{notice}</div>
     </>

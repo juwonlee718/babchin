@@ -32,3 +32,9 @@ Supabase Dashboard의 **Authentication > Sign In / Providers**에서 Anonymous S
 - 개인 시간표 수정·삭제 및 친구 삭제
 
 DB 테이블, 관계, 인덱스, RLS 정책과 친구 관계 RPC는 `supabase/migrations/`에 있습니다. 이 저장소는 Supabase 프로젝트나 DB에 자동으로 연결하거나 migration을 적용하지 않습니다.
+
+## 에브리타임 시간표 이미지 불러오기
+
+시간표의 **이미지 불러오기** 버튼에서 에브리타임 내보내기 PNG/JPG를 선택할 수 있습니다. 브라우저 안에서 색상 수업 블록·한국어 텍스트를 읽어 요일, 시작·종료 시각, 과목명과 강의실을 제안하며, 저장 전 수정할 수 있습니다. 수업 시간은 5분 단위로 저장됩니다.
+
+이 기능을 사용하려면 기존 migration을 실행한 뒤, 새 migration인 `supabase/migrations/20260912062357_add_timetable_session_fields.sql`도 Supabase SQL Editor에서 실행해야 합니다. 이미 등록한 기존 수업은 데이터 보존을 위해 월요일 50분 수업으로 변환되므로 필요하면 앱에서 수정해 주세요.
