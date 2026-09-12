@@ -3,6 +3,6 @@
   "d1": "DB",
   "r2": null,
   "static": {
-    "directory": "public"
+    "directory": "dist/client"
   }
 }
