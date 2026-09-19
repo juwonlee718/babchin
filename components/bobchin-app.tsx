@@ -37,6 +37,22 @@ type Schedule = {
   room: string;
 };
 
+type RecommendedRestaurant = {
+  id: string;
+  name: string;
+  building: string;
+  description: string;
+  tags: string[];
+  distance: number;
+};
+
+type RecommendationResult = {
+  weather: { temperature?: string; humidity?: string; precipitation: string; sky: string };
+  weatherError?: string;
+  restaurants: RecommendedRestaurant[];
+  recommendation: { restaurantId: string; reason: string; weatherTip: string };
+};
+
 type ProfileRow = {
   id: string;
   display_name: string;
@@ -108,6 +124,9 @@ export default function BobchinApp() {
   const [importedSchedules, setImportedSchedules] = useState<ImportedSchedule[]>([]);
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState("");
+  const [recommendation, setRecommendation] = useState<RecommendationResult | null>(null);
+  const [recommending, setRecommending] = useState(false);
+  const [foodPreference, setFoodPreference] = useState("");
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<any[]>([]);
   const inviteInFlightRef = useRef("");
@@ -584,6 +603,37 @@ export default function BobchinApp() {
     }
   };
 
+  const getMealRecommendation = async () => {
+    setRecommending(true);
+    try {
+      let latitude = user?.latitude ?? CAMPUS.lat;
+      let longitude = user?.longitude ?? CAMPUS.lng;
+      if (!user?.latitude && navigator.geolocation) {
+        try {
+          const position = await new Promise<GeolocationPosition>((resolve, reject) =>
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 60_000 }),
+          );
+          latitude = position.coords.latitude;
+          longitude = position.coords.longitude;
+        } catch {
+          // Location permission is optional; fall back to the campus center.
+        }
+      }
+      const response = await fetch("/api/recommendation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ latitude, longitude, preference: foodPreference }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "추천을 만들지 못했어요.");
+      setRecommendation(data);
+    } catch (error) {
+      toast(errorMessage(error));
+    } finally {
+      setRecommending(false);
+    }
+  };
+
   if (booting) {
     return (
       <main className="login">
@@ -661,6 +711,22 @@ export default function BobchinApp() {
               <div className="map-status">{friends.filter((friend) => friend.sharing && friend.latitude != null).length}명의 친구 위치 표시 중</div>
             </section>
             <section className="panel">
+              <article className="recommend-card">
+                <div className="panel-head"><h2>오늘 뭐 먹지? ✨</h2>{recommendation ? <span className="weather-chip">{recommendation.weather.sky}{recommendation.weather.temperature ? ` · ${recommendation.weather.temperature}°` : ""}</span> : null}</div>
+                <p className="recommend-intro">현재 위치와 관악캠퍼스 날씨를 Gemini가 함께 보고 골라드려요.</p>
+                <div className="recommend-form"><input aria-label="먹고 싶은 메뉴나 조건" maxLength={200} value={foodPreference} onChange={(event) => setFoodPreference(event.target.value)} placeholder="예: 비건, 든든하게, 가까운 곳" /><button className="primary" disabled={recommending} onClick={() => void getMealRecommendation()}>{recommending ? "고르는 중…" : recommendation ? "다시 추천" : "추천받기"}</button></div>
+                {recommendation ? (() => {
+                  const selected = recommendation.restaurants.find((restaurant) => restaurant.id === recommendation.recommendation.restaurantId);
+                  return selected ? <div className="ai-pick"><small>GEMINI의 PICK</small><h3>{selected.name}</h3><div className="pick-meta"><span>{selected.building}</span><span>약 {selected.distance}m</span></div><p>{recommendation.recommendation.reason}</p><p className="weather-tip">☂ {recommendation.recommendation.weatherTip}</p></div> : null;
+                })() : null}
+                {recommendation?.weatherError ? <p className="weather-error">기상청 연동 확인 필요: {recommendation.weatherError}</p> : null}
+                {recommendation ? <div className="distance-groups">
+                  {[{ label: "가까움", min: 0, max: 500 }, { label: "걸어갈 만함", min: 500, max: 1000 }, { label: "멀지만 선택지", min: 1000, max: Infinity }].map((group) => {
+                    const items = recommendation.restaurants.filter((restaurant) => restaurant.distance >= group.min && restaurant.distance < group.max);
+                    return items.length ? <details key={group.label}><summary>{group.label}<span>{items.length}곳</span></summary>{items.map((restaurant) => <div className="restaurant-row" key={restaurant.id}><div><b>{restaurant.name}</b><small>{restaurant.building} · {restaurant.description}</small></div><strong>{restaurant.distance}m</strong></div>)}</details> : null;
+                  })}
+                </div> : null}
+              </article>
               <article><h2>친구 초대하기</h2><div className="invite-box"><p>링크를 받은 친구가 로그인하면 양쪽 친구 목록에 바로 추가돼요.</p><button onClick={() => void shareInvite()}>초대 링크 복사</button></div></article>
               <article>
                 <div className="panel-head">

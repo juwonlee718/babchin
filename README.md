@@ -15,7 +15,11 @@ npm run dev
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 NEXT_PUBLIC_KAKAO_MAP_KEY=...
+GEMINI_API_KEY=...
+KMA_API_KEY=...
 ```
+
+`KMA_API_KEY`에는 공공데이터포털의 **기상청 단기예보 조회서비스** 일반 인증키(Decoding)를 입력합니다.
 
 Supabase Dashboard의 **Authentication > Sign In / Providers**에서 Anonymous Sign-Ins를 활성화한 뒤, **SQL Editor**에서 `supabase/migrations/`의 migration SQL을 실행합니다. 앱은 `@supabase/supabase-js`로 직접 연결하며 `service_role` 키는 사용하지 않습니다.
 
@@ -30,6 +34,8 @@ Supabase Dashboard의 **Authentication > Sign In / Providers**에서 Anonymous S
 - 15초 주기 친구 위치 갱신
 - 개인 시간표 저장
 - 개인 시간표 수정·삭제 및 친구 삭제
+- 현재 위치 기준 서울대 학식 거리 분류
+- 기상청 초단기예보와 Gemini를 결합한 식당 추천
 
 DB 테이블, 관계, 인덱스, RLS 정책과 친구 관계 RPC는 `supabase/migrations/`에 있습니다. 이 저장소는 Supabase 프로젝트나 DB에 자동으로 연결하거나 migration을 적용하지 않습니다.
 

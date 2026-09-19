@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./recommendation.css";
 
 export const metadata: Metadata = {
   title: "밥친 · 캠퍼스 메이트",
